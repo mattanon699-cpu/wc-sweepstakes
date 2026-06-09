@@ -1,3 +1,4 @@
+// v2
 export default async function handler(req, res) {
   const response = await fetch(
     "https://api.football-data.org/v4/competitions/WC/matches?season=2022",
