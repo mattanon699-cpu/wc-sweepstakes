@@ -123,7 +123,7 @@ function getPlayerSlug() {
 }
 
 export default function App() {
-  const [apiKey, setApiKey]       = useState(() => localStorage.getItem("wc_api_key") || "");
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("wc_api_key") || "8b440853fdff4f8faba3002d0c058ea1");
   const [keyInput, setKeyInput]   = useState("");
   const [matches, setMatches]     = useState([]);
   const [loading, setLoading]     = useState(false);
