@@ -134,14 +134,11 @@ export default function App() {
   const playerSlug = getPlayerSlug();
   const currentPlayer = PARTICIPANTS.find(p => p.slug === playerSlug) || null;
 
-  const fetchMatches = useCallback(async (key) => {
+  const fetchMatches = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        "https://api.football-data.org/v4/competitions/WC/matches?season=2026",
-        { headers: { "X-Auth-Token": key } }
-      );
+      const res = await fetch("/api/matches");
       if (!res.ok) {
         if (res.status === 403) throw new Error("Invalid API key — check and try again.");
         throw new Error(`API error: ${res.status}`);
@@ -157,7 +154,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (apiKey) fetchMatches(apiKey);
+    if (apiKey) fetchMatches();
   }, [apiKey, fetchMatches]);
 
   const handleKeySubmit = () => {
@@ -209,7 +206,7 @@ export default function App() {
             <div style={s.eyebrow}>FIFA WORLD CUP 2026</div>
             <h1 style={s.headerTitle}>Sweepstakes</h1>
           </div>
-          <button style={s.refreshBtn} onClick={() => fetchMatches(apiKey)} disabled={loading}>
+          <button style={s.refreshBtn} onClick={() => fetchMatches()} disabled={loading}>
             ↻ {loading ? "Updating..." : "Refresh"}
           </button>
         </div>
