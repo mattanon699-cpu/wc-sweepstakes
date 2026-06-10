@@ -241,7 +241,7 @@ export default function App() {
         {[
           { id: "leaderboard", label: "🏆 Leaderboard" },
           { id: "myteams",     label: currentPlayer ? `⚽ ${currentPlayer.name}` : "👥 Teams" },
-          { id: "odds",        label: "📊 Odds" },
+          { id: "odds",        label: "📅 Fixtures" },
         ].map(tab => (
           <button key={tab.id}
             style={{ ...s.tab, ...(activeTab === tab.id ? s.tabActive : {}) }}
@@ -369,7 +369,7 @@ export default function App() {
           <div>
             <div style={s.sectionLabel}>WORLD CUP WINNER ODDS</div>
             <iframe
-              src="https://www.ladbrokes.com/en/sports/event/football/international/world-cup-2026/world-cup-2026-outright/245586542/main-markets"
+              src="https://www.sportbusy.com/embed/world-cup"
               style={{
                 width: "100%",
                 height: "80vh",
