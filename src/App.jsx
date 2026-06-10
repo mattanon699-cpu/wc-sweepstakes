@@ -367,42 +367,21 @@ export default function App() {
         {/* ODDS */}
         {activeTab === "odds" && (
           <div>
-            <div style={s.sectionLabel}>POT A — WORLD CUP WINNER ODDS</div>
-            {oddsLoading && <div style={s.hint}>Loading odds...</div>}
-            {oddsError && <div style={s.errorBanner}>⚠️ {oddsError}</div>}
-            {!oddsLoading && !oddsError && oddsData.length === 0 && (
-              <div style={s.hint}>No odds data available yet.</div>
-            )}
-            {!oddsLoading && oddsTable.map((row, i) => (
-              <div key={row.team} style={{ ...s.leaderRow, ...(i === 0 ? s.leaderRowFirst : {}) }}>
-                <div style={s.leaderLeft}>
-                  <div style={{ ...s.rank, ...(i === 0 ? s.rankFirst : {}) }}>{i + 1}</div>
-                  <Avatar slug={row.slug} name={row.owner} size={40} />
-                  <div>
-                    <div style={s.participantName}>{row.owner}</div>
-                    <div style={{ fontSize: 13, color: "#ef4444", fontWeight: 600 }}>{row.team}</div>
-                  </div>
-                </div>
-                <div style={s.pointsBadge}>
-                  {row.price ? (
-                    <>
-                      <span style={s.pointsNum}>{row.price}x</span>
-                      <span style={s.pointsLabel}>{row.prob}%</span>
-                    </>
-                  ) : (
-                    <span style={{ fontSize: 11, color: "#4a5568" }}>N/A</span>
-                  )}
-                </div>
-              </div>
-            ))}
-            <div style={{ fontSize: 11, color: "#4a5568", marginTop: 12 }}>
-              Decimal odds · implied probability · sorted by favourites
-            </div>
+            <div style={s.sectionLabel}>WORLD CUP WINNER ODDS</div>
+            <iframe
+              src="https://www.ladbrokes.com/en/sports/event/football/international/world-cup-2026/world-cup-2026-outright/245586542/main-markets"
+              style={{
+                width: "100%",
+                height: "80vh",
+                border: "none",
+                borderRadius: 12,
+                background: "#111827",
+              }}
+              title="World Cup Odds"
+            />
           </div>
         )}
-
       </main>
-
       <footer style={s.footer}>
         <span>€120 pot · 12 players · WC 2026</span>
         <button style={s.resetBtn} onClick={() => { localStorage.removeItem("wc_api_key"); setApiKey(""); }}>
