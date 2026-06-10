@@ -14,11 +14,50 @@ const TEAM_NAME_MAP = {
   "USA":           ["United States", "USA"],
 };
 
+const ODDS_NAME_MAP = {
+  "Netherlands":   ["Netherlands", "Holland"],
+  "USA":           ["United States", "USA"],
+  "Türkiye":       ["Turkey", "Türkiye"],
+  "South Korea":   ["Korea Republic", "South Korea"],
+  "DR Congo":      ["Congo DR", "DR Congo"],
+  "Côte d'Ivoire": ["Ivory Coast", "Côte d'Ivoire"],
+  "Bosnia-Herz.":  ["Bosnia Herzegovina", "Bosnia & Herzegovina", "Bosnia-Herzegovina"],
+};
+
 function normalizeTeamName(name) {
   for (const [canonical, aliases] of Object.entries(TEAM_NAME_MAP)) {
     if (aliases.includes(name) || name === canonical) return canonical;
   }
   return name;
+}
+
+function findOddsForTeam(teamName, oddsData) {
+  if (!oddsData || !oddsData.length) return null;
+  const canonical = teamName;
+  const aliases = ODDS_NAME_MAP[canonical] || [canonical];
+  const allNames = [canonical, ...aliases];
+
+  for (const event of oddsData) {
+    for (const bookmaker of (event.bookmakers || [])) {
+      for (const market of (bookmaker.markets || [])) {
+        if (market.key !== "outrights") continue;
+        for (const outcome of (market.outcomes || [])) {
+          if (allNames.some(n =>
+            outcome.name?.toLowerCase().includes(n.toLowerCase()) ||
+            n.toLowerCase().includes(outcome.name?.toLowerCase())
+          )) {
+            return outcome.price;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function oddsToPercent(decimal) {
+  if (!decimal) return null;
+  return ((1 / decimal) * 100).toFixed(1);
 }
 
 const KNOCKOUT_BONUS = { LAST_16: 2, QUARTER_FINALS: 3, SEMI_FINALS: 4, FINAL: 5 };
@@ -35,23 +74,12 @@ function calcPoints(teamName, matches, isPotD = false) {
     const isHome = homeTeam === norm;
     const isAway = awayTeam === norm;
     if (!isHome && !isAway) continue;
-
     const stage = m.stage || "";
     const isKnockout = !stage.includes("GROUP");
-
     let matchPts = 0;
-    if (isHome) {
-      if (home > away) matchPts += 3;
-      else if (home === away) matchPts += 1;
-    } else {
-      if (away > home) matchPts += 3;
-      else if (home === away) matchPts += 1;
-    }
-
-    if (isPotD && isKnockout && matchPts > 0) {
-      matchPts += KNOCKOUT_BONUS[stage] || 0;
-    }
-
+    if (isHome) { if (home > away) matchPts += 3; else if (home === away) matchPts += 1; }
+    else        { if (away > home) matchPts += 3; else if (home === away) matchPts += 1; }
+    if (isPotD && isKnockout && matchPts > 0) matchPts += KNOCKOUT_BONUS[stage] || 0;
     pts += matchPts;
   }
   return pts;
@@ -87,40 +115,30 @@ function getTeamRecord(teamName, matches) {
 function Avatar({ slug, name, size = 40 }) {
   const [failed, setFailed] = useState(false);
   const initials = name.slice(0, 2).toUpperCase();
-
   if (failed) {
     return (
       <div style={{
         width: size, height: size, borderRadius: "50%",
         background: "linear-gradient(135deg, #6366f1, #3b82f6)",
         display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: size * 0.28, fontWeight: 700, color: "#fff",
-        flexShrink: 0,
+        fontSize: size * 0.28, fontWeight: 700, color: "#fff", flexShrink: 0,
       }}>
         {initials}
       </div>
     );
   }
-
   return (
-    <img
-      src={`/avatars/${slug}.jpg`}
-      alt={name}
-      onError={() => setFailed(true)}
-      style={{
-        width: size, height: size, borderRadius: "50%",
-        objectFit: "cover", flexShrink: 0,
-        border: "2px solid #2a3356",
-      }}
-    />
+    <img src={`/avatars/${slug}.jpg`} alt={name} onError={() => setFailed(true)}
+      style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "2px solid #2a3356" }} />
   );
 }
 
-// Read ?player=slug from URL
 function getPlayerSlug() {
   const params = new URLSearchParams(window.location.search);
   return params.get("player")?.toLowerCase() || null;
 }
+
+const POT_A_TEAMS = PARTICIPANTS.map(p => ({ owner: p.name, slug: p.slug, team: p.teams.a }));
 
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("wc_api_key") || "8b440853fdff4f8faba3002d0c058ea1");
@@ -130,32 +148,38 @@ export default function App() {
   const [error, setError]         = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [activeTab, setActiveTab] = useState("leaderboard");
+  const [oddsData, setOddsData]   = useState([]);
+  const [oddsLoading, setOddsLoading] = useState(false);
+  const [oddsError, setOddsError] = useState(null);
 
   const playerSlug = getPlayerSlug();
   const currentPlayer = PARTICIPANTS.find(p => p.slug === playerSlug) || null;
 
   const fetchMatches = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     try {
       const res = await fetch("/api/matches");
-      if (!res.ok) {
-        if (res.status === 403) throw new Error("Invalid API key — check and try again.");
-        throw new Error(`API error: ${res.status}`);
-      }
+      if (!res.ok) throw new Error(res.status === 403 ? "Invalid API key" : `API error: ${res.status}`);
       const data = await res.json();
       setMatches(data.matches || []);
       setLastUpdated(new Date());
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
   }, []);
 
-  useEffect(() => {
-    if (apiKey) fetchMatches();
-  }, [apiKey, fetchMatches]);
+  const fetchOdds = useCallback(async () => {
+    setOddsLoading(true); setOddsError(null);
+    try {
+      const res = await fetch("/api/odds");
+      if (!res.ok) throw new Error(`Odds API error: ${res.status}`);
+      const data = await res.json();
+      setOddsData(Array.isArray(data) ? data : []);
+    } catch (e) { setOddsError(e.message); }
+    finally { setOddsLoading(false); }
+  }, []);
+
+  useEffect(() => { if (apiKey) fetchMatches(); }, [apiKey, fetchMatches]);
+  useEffect(() => { if (activeTab === "odds") fetchOdds(); }, [activeTab, fetchOdds]);
 
   const handleKeySubmit = () => {
     if (!keyInput.trim()) return;
@@ -168,7 +192,12 @@ export default function App() {
     .map(p => ({ ...p, points: calcAllPoints(p, matches) }))
     .sort((a, b) => b.points - a.points);
 
-  // ── API key gate ──────────────────────────────────────────────────────────
+  const oddsTable = POT_A_TEAMS.map(({ owner, slug, team }) => {
+    const price = findOddsForTeam(team, oddsData);
+    const prob = price ? parseFloat(oddsToPercent(price)) : null;
+    return { owner, slug, team, price, prob };
+  }).sort((a, b) => (b.prob || 0) - (a.prob || 0));
+
   if (!apiKey) {
     return (
       <div style={s.root}>
@@ -177,27 +206,17 @@ export default function App() {
           <h1 style={s.setupTitle}>World Cup 2026</h1>
           <p style={s.setupSubtitle}>Sweepstakes Tracker</p>
           <p style={s.setupHint}>Enter your football-data.org API key to get started</p>
-          <input
-            style={s.keyInput}
-            type="text"
-            placeholder="Paste API key here..."
-            value={keyInput}
-            onChange={e => setKeyInput(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleKeySubmit()}
-          />
+          <input style={s.keyInput} type="text" placeholder="Paste API key here..." value={keyInput}
+            onChange={e => setKeyInput(e.target.value)} onKeyDown={e => e.key === "Enter" && handleKeySubmit()} />
           <button style={s.submitBtn} onClick={handleKeySubmit}>Let's go →</button>
-          <p style={s.keyHint}>
-            Get a free key at{" "}
-            <a href="https://www.football-data.org" target="_blank" rel="noreferrer" style={s.link}>
-              football-data.org
-            </a>
+          <p style={s.keyHint}>Get a free key at{" "}
+            <a href="https://www.football-data.org" target="_blank" rel="noreferrer" style={s.link}>football-data.org</a>
           </p>
         </div>
       </div>
     );
   }
 
-  // ── Main app ──────────────────────────────────────────────────────────────
   return (
     <div style={s.root}>
       <header style={s.header}>
@@ -206,7 +225,7 @@ export default function App() {
             <div style={s.eyebrow}>FIFA WORLD CUP 2026</div>
             <h1 style={s.headerTitle}>Sweepstakes</h1>
           </div>
-          <button style={s.refreshBtn} onClick={() => fetchMatches()} disabled={loading}>
+          <button style={s.refreshBtn} onClick={() => { fetchMatches(); if (activeTab === "odds") fetchOdds(); }} disabled={loading}>
             ↻ {loading ? "Updating..." : "Refresh"}
           </button>
         </div>
@@ -222,12 +241,11 @@ export default function App() {
         {[
           { id: "leaderboard", label: "🏆 Leaderboard" },
           { id: "myteams",     label: currentPlayer ? `⚽ ${currentPlayer.name}` : "👥 Teams" },
+          { id: "odds",        label: "📊 Odds" },
         ].map(tab => (
-          <button
-            key={tab.id}
+          <button key={tab.id}
             style={{ ...s.tab, ...(activeTab === tab.id ? s.tabActive : {}) }}
-            onClick={() => setActiveTab(tab.id)}
-          >
+            onClick={() => setActiveTab(tab.id)}>
             {tab.label}
           </button>
         ))}
@@ -235,7 +253,7 @@ export default function App() {
 
       <main style={s.main}>
 
-        {/* ── LEADERBOARD ── */}
+        {/* LEADERBOARD */}
         {activeTab === "leaderboard" && (
           <div>
             <div style={s.sectionLabel}>GAME 2 — POINTS STANDINGS</div>
@@ -245,9 +263,7 @@ export default function App() {
               return (
                 <div key={p.name} style={{ ...s.leaderRow, ...(i === 0 ? s.leaderRowFirst : {}), ...(isMe ? s.leaderRowMe : {}) }}>
                   <div style={s.leaderLeft}>
-                    <div style={{ ...s.rank, ...(i === 0 ? s.rankFirst : {}) }}>
-                      {medal || i + 1}
-                    </div>
+                    <div style={{ ...s.rank, ...(i === 0 ? s.rankFirst : {}) }}>{medal || i + 1}</div>
                     <Avatar slug={p.slug} name={p.name} size={40} />
                     <div>
                       <div style={s.participantName}>
@@ -272,25 +288,21 @@ export default function App() {
           </div>
         )}
 
-        {/* ── MY TEAMS / ALL TEAMS ── */}
+        {/* MY TEAMS */}
         {activeTab === "myteams" && (
           <div>
             {currentPlayer ? (
-              // Single player view
               <div>
                 <div style={s.myTeamsHero}>
                   <Avatar slug={currentPlayer.slug} name={currentPlayer.name} size={72} />
                   <div>
                     <div style={s.myTeamsName}>{currentPlayer.name}</div>
-                    <div style={s.myTeamsPoints}>
-                      {calcAllPoints(currentPlayer, matches)} points
-                    </div>
+                    <div style={s.myTeamsPoints}>{calcAllPoints(currentPlayer, matches)} points</div>
                     <div style={s.myTeamsRank}>
                       #{leaderboard.findIndex(p => p.slug === currentPlayer.slug) + 1} of {PARTICIPANTS.length}
                     </div>
                   </div>
                 </div>
-
                 <div style={s.sectionLabel}>YOUR TEAMS</div>
                 {Object.entries(currentPlayer.teams).map(([pot, team]) => {
                   const rec = getTeamRecord(team, matches);
@@ -315,7 +327,6 @@ export default function App() {
                 })}
               </div>
             ) : (
-              // All teams view (no ?player= in URL)
               <div>
                 <div style={s.sectionLabel}>ALL PARTICIPANTS</div>
                 <div style={s.noPlayerHint}>
@@ -352,6 +363,44 @@ export default function App() {
             )}
           </div>
         )}
+
+        {/* ODDS */}
+        {activeTab === "odds" && (
+          <div>
+            <div style={s.sectionLabel}>POT A — WORLD CUP WINNER ODDS</div>
+            {oddsLoading && <div style={s.hint}>Loading odds...</div>}
+            {oddsError && <div style={s.errorBanner}>⚠️ {oddsError}</div>}
+            {!oddsLoading && !oddsError && oddsData.length === 0 && (
+              <div style={s.hint}>No odds data available yet.</div>
+            )}
+            {!oddsLoading && oddsTable.map((row, i) => (
+              <div key={row.team} style={{ ...s.leaderRow, ...(i === 0 ? s.leaderRowFirst : {}) }}>
+                <div style={s.leaderLeft}>
+                  <div style={{ ...s.rank, ...(i === 0 ? s.rankFirst : {}) }}>{i + 1}</div>
+                  <Avatar slug={row.slug} name={row.owner} size={40} />
+                  <div>
+                    <div style={s.participantName}>{row.owner}</div>
+                    <div style={{ fontSize: 13, color: "#ef4444", fontWeight: 600 }}>{row.team}</div>
+                  </div>
+                </div>
+                <div style={s.pointsBadge}>
+                  {row.price ? (
+                    <>
+                      <span style={s.pointsNum}>{row.price}x</span>
+                      <span style={s.pointsLabel}>{row.prob}%</span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 11, color: "#4a5568" }}>N/A</span>
+                  )}
+                </div>
+              </div>
+            ))}
+            <div style={{ fontSize: 11, color: "#4a5568", marginTop: 12 }}>
+              Decimal odds · implied probability · sorted by favourites
+            </div>
+          </div>
+        )}
+
       </main>
 
       <footer style={s.footer}>
@@ -381,6 +430,7 @@ const s = {
   refreshBtn: { padding: "8px 14px", background: "#141929", border: "1px solid #2a3356", borderRadius: 8, color: "#8892aa", fontSize: 13, cursor: "pointer" },
   lastUpdated: { fontSize: 11, color: "#4a5568", padding: "8px 0 12px" },
   errorBanner: { background: "#2d1515", border: "1px solid #7f1d1d", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#fca5a5", marginBottom: 12 },
+  hint: { fontSize: 13, color: "#6b7a99", padding: "20px 0" },
   tabs: { display: "flex", borderBottom: "1px solid #1a2040", padding: "0 20px" },
   tab: { padding: "14px 16px", background: "none", border: "none", color: "#6b7a99", fontSize: 13, fontWeight: 600, cursor: "pointer", borderBottom: "2px solid transparent", marginBottom: -1 },
   tabActive: { color: "#f0f4ff", borderBottomColor: "#6366f1" },
