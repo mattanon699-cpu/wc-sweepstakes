@@ -73,7 +73,6 @@ function getTeamRecord(teamName, matches) {
   return { w, d, l };
 }
 
-// All participant teams as a flat set for quick lookup
 const ALL_TEAMS = new Set(
   PARTICIPANTS.flatMap(p => Object.values(p.teams).map(t => normalizeTeamName(t)))
 );
@@ -82,7 +81,6 @@ function isParticipantTeam(name) {
   return ALL_TEAMS.has(normalizeTeamName(name));
 }
 
-// Find owner(s) of a team across all pots
 function getOwners(teamName) {
   const norm = normalizeTeamName(teamName);
   const owners = [];
@@ -94,9 +92,8 @@ function getOwners(teamName) {
   return owners;
 }
 
-// Get matches today (UTC date) that involve at least one participant team
 function getTodayMatches(matches) {
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const today = new Date().toISOString().slice(0, 10);
   return matches.filter(m => {
     if (!m.utcDate) return false;
     if (m.utcDate.slice(0, 10) !== today) return false;
@@ -106,7 +103,23 @@ function getTodayMatches(matches) {
   });
 }
 
-// Get live match for a specific team
+// Get upcoming matches for sweepstakes teams (next 7 days, not today, not finished)
+function getUpcomingMatches(matches) {
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  return matches.filter(m => {
+    if (!m.utcDate) return false;
+    const date = m.utcDate.slice(0, 10);
+    if (date <= today) return false;
+    if (date > in7Days) return false;
+    if (m.status === "FINISHED") return false;
+    const home = normalizeTeamName(m.homeTeam?.name || "");
+    const away = normalizeTeamName(m.awayTeam?.name || "");
+    return isParticipantTeam(home) || isParticipantTeam(away);
+  }).sort((a, b) => new Date(a.utcDate) - new Date(b.utcDate));
+}
+
 function getLiveMatch(teamName, matches) {
   const norm = normalizeTeamName(teamName);
   return matches.find(m => {
@@ -117,11 +130,17 @@ function getLiveMatch(teamName, matches) {
   }) || null;
 }
 
-// Format UTC date to Irish time
 function toIrishTime(utcDate) {
   return new Date(utcDate).toLocaleTimeString("en-IE", {
     hour: "2-digit", minute: "2-digit", timeZone: "Europe/Dublin"
   });
+}
+
+function toIrishDateTime(utcDate) {
+  const d = new Date(utcDate);
+  const day = d.toLocaleDateString("en-IE", { weekday: "short", month: "short", day: "numeric", timeZone: "Europe/Dublin" });
+  const time = d.toLocaleTimeString("en-IE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Dublin" });
+  return { day, time };
 }
 
 function Avatar({ slug, name, size = 40 }) {
@@ -158,6 +177,9 @@ export default function App() {
   const [error, setError]         = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [activeTab, setActiveTab] = useState("leaderboard");
+  const [scorers, setScorers]         = useState([]);
+  const [scorersLoading, setScorersLoading] = useState(false);
+  const [scorersError, setScorersError]     = useState(null);
 
   const playerSlug = getPlayerSlug();
   const currentPlayer = PARTICIPANTS.find(p => p.slug === playerSlug) || null;
@@ -174,15 +196,24 @@ export default function App() {
     finally { setLoading(false); }
   }, []);
 
-  // Initial fetch
-  useEffect(() => { if (apiKey) fetchMatches(); }, [apiKey, fetchMatches]);
+  const fetchScorers = useCallback(async () => {
+    setScorersLoading(true); setScorersError(null);
+    try {
+      const res = await fetch("/api/scorers");
+      if (!res.ok) throw new Error(`Scorers API error: ${res.status}`);
+      const data = await res.json();
+      setScorers(data.scorers || []);
+    } catch (e) { setScorersError(e.message); }
+    finally { setScorersLoading(false); }
+  }, []);
 
-  // Auto-refresh every 60 seconds
+  useEffect(() => { if (apiKey) fetchMatches(); }, [apiKey, fetchMatches]);
   useEffect(() => {
     if (!apiKey) return;
     const interval = setInterval(() => fetchMatches(), 60000);
     return () => clearInterval(interval);
   }, [apiKey, fetchMatches]);
+  useEffect(() => { if (activeTab === "boot") fetchScorers(); }, [activeTab, fetchScorers]);
 
   const handleKeySubmit = () => {
     if (!keyInput.trim()) return;
@@ -196,7 +227,9 @@ export default function App() {
     .sort((a, b) => b.points - a.points);
 
   const todayMatches = getTodayMatches(matches);
+  const upcomingMatches = getUpcomingMatches(matches);
   const anyLive = todayMatches.some(m => m.status === "IN_PLAY");
+  const top3Scorers = scorers.slice(0, 3);
 
   if (!apiKey) {
     return (
@@ -225,7 +258,7 @@ export default function App() {
             <div style={s.eyebrow}>FIFA WORLD CUP 2026</div>
             <h1 style={s.headerTitle}>Sweepstakes</h1>
           </div>
-          <button style={s.refreshBtn} onClick={() => fetchMatches()} disabled={loading}>
+          <button style={s.refreshBtn} onClick={() => { fetchMatches(); if (activeTab === "boot") fetchScorers(); }} disabled={loading}>
             ↻ {loading ? "Updating..." : "Refresh"}
           </button>
         </div>
@@ -241,7 +274,8 @@ export default function App() {
         {[
           { id: "leaderboard", label: "🏆 Leaderboard" },
           { id: "myteams",     label: currentPlayer ? `⚽ ${currentPlayer.name}` : "👥 Teams" },
-          { id: "fixtures",    label: "📅 Fixtures" },
+          { id: "matches",     label: "📅 Matches" },
+          { id: "boot",        label: "👟 Golden Boot" },
         ].map(tab => (
           <button key={tab.id}
             style={{ ...s.tab, ...(activeTab === tab.id ? s.tabActive : {}) }}
@@ -253,7 +287,7 @@ export default function App() {
 
       <main style={s.main}>
 
-        {/* TODAY'S MATCHES BANNER — shown on leaderboard tab only */}
+        {/* TODAY'S MATCHES BANNER — leaderboard tab only, unchanged */}
         {activeTab === "leaderboard" && todayMatches.length > 0 && (
           <div style={s.todayBanner}>
             <div style={s.todayHeader}>
@@ -301,14 +335,13 @@ export default function App() {
           </div>
         )}
 
-        {/* LEADERBOARD */}
+        {/* LEADERBOARD — unchanged */}
         {activeTab === "leaderboard" && (
           <div>
             <div style={s.sectionLabel}>GAME 2 — POINTS STANDINGS</div>
             {leaderboard.map((p, i) => {
               const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
               const isMe = currentPlayer?.slug === p.slug;
-              // Check if any of this person's teams are live
               const liveTeam = Object.values(p.teams).find(t => getLiveMatch(t, matches));
               const liveMatch = liveTeam ? getLiveMatch(liveTeam, matches) : null;
               return (
@@ -342,7 +375,7 @@ export default function App() {
           </div>
         )}
 
-        {/* MY TEAMS */}
+        {/* MY TEAMS — unchanged */}
         {activeTab === "myteams" && (
           <div>
             {currentPlayer ? (
@@ -422,15 +455,142 @@ export default function App() {
           </div>
         )}
 
-        {/* FIXTURES */}
-        {activeTab === "fixtures" && (
+        {/* MATCHES — upcoming fixtures for sweepstakes teams */}
+        {activeTab === "matches" && (
           <div>
-            <div style={s.sectionLabel}>WORLD CUP FIXTURES</div>
-            <iframe
-              src="https://www.sportbusy.com/embed/world-cup"
-              style={{ width: "100%", height: "80vh", border: "none", borderRadius: 12, background: "#111827" }}
-              title="World Cup Fixtures"
-            />
+            {todayMatches.length > 0 && (
+              <>
+                <div style={s.sectionLabel}>
+                  {anyLive ? <><span style={s.liveDot} /> LIVE NOW</> : "TODAY"}
+                </div>
+                {todayMatches.map(m => {
+                  const isLive = m.status === "IN_PLAY";
+                  const isFinished = m.status === "FINISHED";
+                  const homeScore = m.score?.fullTime?.home;
+                  const awayScore = m.score?.fullTime?.away;
+                  const homeOwners = getOwners(normalizeTeamName(m.homeTeam?.name || ""));
+                  const awayOwners = getOwners(normalizeTeamName(m.awayTeam?.name || ""));
+                  return (
+                    <div key={m.id} style={{ ...s.matchCard, ...(isLive ? s.matchCardLive : {}) }}>
+                      <div style={s.matchTeamsRow}>
+                        <div style={s.matchTeam}>
+                          <span style={s.matchTeamName}>{m.homeTeam?.shortName || m.homeTeam?.name}</span>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 3 }}>
+                            {homeOwners.map(o => <span key={o.slug} style={{ ...s.ownerPill, background: POT_COLORS[o.pot] + "33", color: POT_COLORS[o.pot] }}>{o.name}</span>)}
+                          </div>
+                        </div>
+                        <div style={s.matchScore}>
+                          {isLive || isFinished
+                            ? <span style={{ ...s.scoreText, ...(isLive ? { color: "#ef4444" } : {}) }}>{homeScore ?? 0} – {awayScore ?? 0}</span>
+                            : <span style={s.kickoff}>{toIrishTime(m.utcDate)}</span>
+                          }
+                          {isLive && <div style={{ ...s.liveTag, display: "block", textAlign: "center", marginTop: 4 }}>LIVE</div>}
+                          {isFinished && <div style={{ ...s.finishedTag, display: "block", textAlign: "center", marginTop: 4 }}>FT</div>}
+                        </div>
+                        <div style={{ ...s.matchTeam, alignItems: "flex-end" }}>
+                          <span style={s.matchTeamName}>{m.awayTeam?.shortName || m.awayTeam?.name}</span>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 3, justifyContent: "flex-end" }}>
+                            {awayOwners.map(o => <span key={o.slug} style={{ ...s.ownerPill, background: POT_COLORS[o.pot] + "33", color: POT_COLORS[o.pot] }}>{o.name}</span>)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            {upcomingMatches.length > 0 && (
+              <>
+                <div style={{ ...s.sectionLabel, marginTop: todayMatches.length > 0 ? 24 : 0 }}>UPCOMING — NEXT 7 DAYS</div>
+                {upcomingMatches.map(m => {
+                  const { day, time } = toIrishDateTime(m.utcDate);
+                  const homeOwners = getOwners(normalizeTeamName(m.homeTeam?.name || ""));
+                  const awayOwners = getOwners(normalizeTeamName(m.awayTeam?.name || ""));
+                  return (
+                    <div key={m.id} style={s.matchCard}>
+                      <div style={s.matchDate}>{day} · {time}</div>
+                      <div style={s.matchTeamsRow}>
+                        <div style={s.matchTeam}>
+                          <span style={s.matchTeamName}>{m.homeTeam?.shortName || m.homeTeam?.name}</span>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 3 }}>
+                            {homeOwners.map(o => <span key={o.slug} style={{ ...s.ownerPill, background: POT_COLORS[o.pot] + "33", color: POT_COLORS[o.pot] }}>{o.name}</span>)}
+                          </div>
+                        </div>
+                        <div style={s.matchScore}>
+                          <span style={s.kickoff}>{time}</span>
+                        </div>
+                        <div style={{ ...s.matchTeam, alignItems: "flex-end" }}>
+                          <span style={s.matchTeamName}>{m.awayTeam?.shortName || m.awayTeam?.name}</span>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 3, marginTop: 3, justifyContent: "flex-end" }}>
+                            {awayOwners.map(o => <span key={o.slug} style={{ ...s.ownerPill, background: POT_COLORS[o.pot] + "33", color: POT_COLORS[o.pot] }}>{o.name}</span>)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            {todayMatches.length === 0 && upcomingMatches.length === 0 && (
+              <div style={s.hint}>No sweepstakes matches in the next 7 days.</div>
+            )}
+          </div>
+        )}
+
+        {/* GOLDEN BOOT */}
+        {activeTab === "boot" && (
+          <div>
+            <div style={s.sectionLabel}>👟 GOLDEN BOOT — TOP SCORERS</div>
+            {scorersLoading && <div style={s.hint}>Loading scorers...</div>}
+            {scorersError && <div style={s.errorBanner}>⚠️ {scorersError}</div>}
+            {!scorersLoading && scorers.length === 0 && !scorersError && (
+              <div style={s.hint}>No scorer data yet — check back once matches have been played.</div>
+            )}
+            {top3Scorers.map((scorer, i) => {
+              const teamNorm = normalizeTeamName(scorer.team?.name || "");
+              const owners = getOwners(teamNorm);
+              const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : "🥉";
+              return (
+                <div key={scorer.player?.id || i} style={{ ...s.bootRow, ...(i === 0 ? s.bootRowFirst : {}) }}>
+                  <div style={s.bootLeft}>
+                    <div style={s.bootMedal}>{medal}</div>
+                    <div>
+                      <div style={s.bootName}>{scorer.player?.name}</div>
+                      <div style={s.bootTeam}>
+                        {scorer.team?.shortName || scorer.team?.name}
+                        {owners.map(o => (
+                          <span key={o.slug} style={{ ...s.ownerPill, background: POT_COLORS[o.pot] + "33", color: POT_COLORS[o.pot], marginLeft: 6 }}>{o.name}</span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={s.bootGoals}>
+                    <span style={s.bootGoalNum}>{scorer.goals ?? scorer.numberOfGoals ?? 0}</span>
+                    <span style={s.bootGoalLabel}>goals</span>
+                  </div>
+                </div>
+              );
+            })}
+            {scorers.length > 3 && (
+              <div style={s.bootRest}>
+                {scorers.slice(3, 10).map((scorer, i) => {
+                  const owners = getOwners(normalizeTeamName(scorer.team?.name || ""));
+                  return (
+                    <div key={scorer.player?.id || i} style={s.bootRestRow}>
+                      <span style={s.bootRestPos}>{i + 4}</span>
+                      <span style={s.bootRestName}>{scorer.player?.name}</span>
+                      <span style={s.bootRestTeam}>{scorer.team?.shortName || scorer.team?.name}</span>
+                      {owners.map(o => (
+                        <span key={o.slug} style={{ ...s.ownerPill, background: POT_COLORS[o.pot] + "33", color: POT_COLORS[o.pot] }}>{o.name}</span>
+                      ))}
+                      <span style={s.bootRestGoals}>{scorer.goals ?? scorer.numberOfGoals ?? 0}⚽</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -464,15 +624,15 @@ const s = {
   lastUpdated: { fontSize: 11, color: "#4a5568", padding: "8px 0 12px" },
   errorBanner: { background: "#2d1515", border: "1px solid #7f1d1d", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#fca5a5", marginBottom: 12 },
   hint: { fontSize: 13, color: "#6b7a99", padding: "20px 0" },
-  tabs: { display: "flex", borderBottom: "1px solid #1a2040", padding: "0 20px" },
-  tab: { padding: "14px 16px", background: "none", border: "none", color: "#6b7a99", fontSize: 13, fontWeight: 600, cursor: "pointer", borderBottom: "2px solid transparent", marginBottom: -1 },
+  tabs: { display: "flex", borderBottom: "1px solid #1a2040", padding: "0 20px", overflowX: "auto" },
+  tab: { padding: "14px 12px", background: "none", border: "none", color: "#6b7a99", fontSize: 12, fontWeight: 600, cursor: "pointer", borderBottom: "2px solid transparent", marginBottom: -1, whiteSpace: "nowrap" },
   tabActive: { color: "#f0f4ff", borderBottomColor: "#6366f1" },
   main: { padding: "20px" },
-  sectionLabel: { fontSize: 10, fontWeight: 700, letterSpacing: 2, color: "#6b7a99", marginBottom: 16 },
-  // Today's matches banner
+  sectionLabel: { fontSize: 10, fontWeight: 700, letterSpacing: 2, color: "#6b7a99", marginBottom: 16, display: "flex", alignItems: "center", gap: 6 },
+  // Today's matches banner (leaderboard tab)
   todayBanner: { background: "#111827", border: "1px solid #1a2040", borderRadius: 12, padding: "14px", marginBottom: 20 },
   todayHeader: { fontSize: 10, fontWeight: 700, letterSpacing: 2, color: "#6b7a99", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 },
-  liveDot: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#ef4444" },
+  liveDot: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#ef4444", flexShrink: 0 },
   todayMatch: { padding: "10px 0", borderBottom: "1px solid #1a2040" },
   todayMatchLive: { },
   todayMatchTeams: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
@@ -526,6 +686,30 @@ const s = {
   potTag: { fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4, flexShrink: 0 },
   teamName: { fontSize: 13, fontWeight: 600, flex: 1 },
   record: { fontSize: 11, color: "#6b7a99" },
+  // Matches tab
+  matchCard: { background: "#111827", border: "1px solid #1a2040", borderRadius: 12, padding: "14px", marginBottom: 10 },
+  matchCardLive: { border: "1px solid #ef444466" },
+  matchDate: { fontSize: 11, color: "#6b7a99", fontWeight: 600, marginBottom: 10 },
+  matchTeamsRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  matchTeam: { display: "flex", flexDirection: "column", flex: 1 },
+  matchTeamName: { fontSize: 14, fontWeight: 700 },
+  matchScore: { textAlign: "center", minWidth: 70 },
+  // Golden Boot tab
+  bootRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px", marginBottom: 10, background: "#111827", borderRadius: 12, border: "1px solid #1a2040" },
+  bootRowFirst: { background: "linear-gradient(135deg,#1a1f3d,#16213e)", border: "1px solid #3b4fd6" },
+  bootLeft: { display: "flex", alignItems: "center", gap: 14 },
+  bootMedal: { fontSize: 28, flexShrink: 0 },
+  bootName: { fontSize: 16, fontWeight: 800, marginBottom: 3 },
+  bootTeam: { fontSize: 12, color: "#6b7a99", display: "flex", alignItems: "center", flexWrap: "wrap", gap: 4 },
+  bootGoals: { display: "flex", flexDirection: "column", alignItems: "center", minWidth: 52 },
+  bootGoalNum: { fontSize: 28, fontWeight: 800, lineHeight: 1, color: "#f0f4ff" },
+  bootGoalLabel: { fontSize: 10, color: "#6b7a99", marginTop: 2 },
+  bootRest: { background: "#111827", borderRadius: 12, border: "1px solid #1a2040", overflow: "hidden", marginTop: 8 },
+  bootRestRow: { display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderBottom: "1px solid #1a2040", fontSize: 13 },
+  bootRestPos: { color: "#4a5568", fontWeight: 700, minWidth: 20 },
+  bootRestName: { fontWeight: 700, flex: 1 },
+  bootRestTeam: { color: "#6b7a99", fontSize: 12, marginRight: 4 },
+  bootRestGoals: { color: "#f0f4ff", fontWeight: 700, marginLeft: "auto" },
   footer: { padding: "16px 20px", borderTop: "1px solid #1a2040", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: "#4a5568" },
   resetBtn: { background: "none", border: "none", color: "#4a5568", fontSize: 11, cursor: "pointer", textDecoration: "underline" },
 };
