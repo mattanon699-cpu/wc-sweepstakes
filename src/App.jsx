@@ -14,50 +14,11 @@ const TEAM_NAME_MAP = {
   "USA":           ["United States", "USA"],
 };
 
-const ODDS_NAME_MAP = {
-  "Netherlands":   ["Netherlands", "Holland"],
-  "USA":           ["United States", "USA"],
-  "Türkiye":       ["Turkey", "Türkiye"],
-  "South Korea":   ["Korea Republic", "South Korea"],
-  "DR Congo":      ["Congo DR", "DR Congo"],
-  "Côte d'Ivoire": ["Ivory Coast", "Côte d'Ivoire"],
-  "Bosnia-Herz.":  ["Bosnia Herzegovina", "Bosnia & Herzegovina", "Bosnia-Herzegovina"],
-};
-
 function normalizeTeamName(name) {
   for (const [canonical, aliases] of Object.entries(TEAM_NAME_MAP)) {
     if (aliases.includes(name) || name === canonical) return canonical;
   }
   return name;
-}
-
-function findOddsForTeam(teamName, oddsData) {
-  if (!oddsData || !oddsData.length) return null;
-  const canonical = teamName;
-  const aliases = ODDS_NAME_MAP[canonical] || [canonical];
-  const allNames = [canonical, ...aliases];
-
-  for (const event of oddsData) {
-    for (const bookmaker of (event.bookmakers || [])) {
-      for (const market of (bookmaker.markets || [])) {
-        if (market.key !== "outrights") continue;
-        for (const outcome of (market.outcomes || [])) {
-          if (allNames.some(n =>
-            outcome.name?.toLowerCase().includes(n.toLowerCase()) ||
-            n.toLowerCase().includes(outcome.name?.toLowerCase())
-          )) {
-            return outcome.price;
-          }
-        }
-      }
-    }
-  }
-  return null;
-}
-
-function oddsToPercent(decimal) {
-  if (!decimal) return null;
-  return ((1 / decimal) * 100).toFixed(1);
 }
 
 const KNOCKOUT_BONUS = { LAST_16: 2, QUARTER_FINALS: 3, SEMI_FINALS: 4, FINAL: 5 };
@@ -112,6 +73,57 @@ function getTeamRecord(teamName, matches) {
   return { w, d, l };
 }
 
+// All participant teams as a flat set for quick lookup
+const ALL_TEAMS = new Set(
+  PARTICIPANTS.flatMap(p => Object.values(p.teams).map(t => normalizeTeamName(t)))
+);
+
+function isParticipantTeam(name) {
+  return ALL_TEAMS.has(normalizeTeamName(name));
+}
+
+// Find owner(s) of a team across all pots
+function getOwners(teamName) {
+  const norm = normalizeTeamName(teamName);
+  const owners = [];
+  for (const p of PARTICIPANTS) {
+    for (const [pot, t] of Object.entries(p.teams)) {
+      if (normalizeTeamName(t) === norm) owners.push({ name: p.name, slug: p.slug, pot });
+    }
+  }
+  return owners;
+}
+
+// Get matches today (UTC date) that involve at least one participant team
+function getTodayMatches(matches) {
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  return matches.filter(m => {
+    if (!m.utcDate) return false;
+    if (m.utcDate.slice(0, 10) !== today) return false;
+    const home = normalizeTeamName(m.homeTeam?.name || "");
+    const away = normalizeTeamName(m.awayTeam?.name || "");
+    return isParticipantTeam(home) || isParticipantTeam(away);
+  });
+}
+
+// Get live match for a specific team
+function getLiveMatch(teamName, matches) {
+  const norm = normalizeTeamName(teamName);
+  return matches.find(m => {
+    if (m.status !== "IN_PLAY") return false;
+    const home = normalizeTeamName(m.homeTeam?.name || "");
+    const away = normalizeTeamName(m.awayTeam?.name || "");
+    return home === norm || away === norm;
+  }) || null;
+}
+
+// Format UTC date to Irish time
+function toIrishTime(utcDate) {
+  return new Date(utcDate).toLocaleTimeString("en-IE", {
+    hour: "2-digit", minute: "2-digit", timeZone: "Europe/Dublin"
+  });
+}
+
 function Avatar({ slug, name, size = 40 }) {
   const [failed, setFailed] = useState(false);
   const initials = name.slice(0, 2).toUpperCase();
@@ -138,8 +150,6 @@ function getPlayerSlug() {
   return params.get("player")?.toLowerCase() || null;
 }
 
-const POT_A_TEAMS = PARTICIPANTS.map(p => ({ owner: p.name, slug: p.slug, team: p.teams.a }));
-
 export default function App() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("wc_api_key") || "8b440853fdff4f8faba3002d0c058ea1");
   const [keyInput, setKeyInput]   = useState("");
@@ -148,9 +158,6 @@ export default function App() {
   const [error, setError]         = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [activeTab, setActiveTab] = useState("leaderboard");
-  const [oddsData, setOddsData]   = useState([]);
-  const [oddsLoading, setOddsLoading] = useState(false);
-  const [oddsError, setOddsError] = useState(null);
 
   const playerSlug = getPlayerSlug();
   const currentPlayer = PARTICIPANTS.find(p => p.slug === playerSlug) || null;
@@ -167,19 +174,15 @@ export default function App() {
     finally { setLoading(false); }
   }, []);
 
-  const fetchOdds = useCallback(async () => {
-    setOddsLoading(true); setOddsError(null);
-    try {
-      const res = await fetch("/api/odds");
-      if (!res.ok) throw new Error(`Odds API error: ${res.status}`);
-      const data = await res.json();
-      setOddsData(Array.isArray(data) ? data : []);
-    } catch (e) { setOddsError(e.message); }
-    finally { setOddsLoading(false); }
-  }, []);
-
+  // Initial fetch
   useEffect(() => { if (apiKey) fetchMatches(); }, [apiKey, fetchMatches]);
-  useEffect(() => { if (activeTab === "odds") fetchOdds(); }, [activeTab, fetchOdds]);
+
+  // Auto-refresh every 60 seconds
+  useEffect(() => {
+    if (!apiKey) return;
+    const interval = setInterval(() => fetchMatches(), 60000);
+    return () => clearInterval(interval);
+  }, [apiKey, fetchMatches]);
 
   const handleKeySubmit = () => {
     if (!keyInput.trim()) return;
@@ -192,11 +195,8 @@ export default function App() {
     .map(p => ({ ...p, points: calcAllPoints(p, matches) }))
     .sort((a, b) => b.points - a.points);
 
-  const oddsTable = POT_A_TEAMS.map(({ owner, slug, team }) => {
-    const price = findOddsForTeam(team, oddsData);
-    const prob = price ? parseFloat(oddsToPercent(price)) : null;
-    return { owner, slug, team, price, prob };
-  }).sort((a, b) => (b.prob || 0) - (a.prob || 0));
+  const todayMatches = getTodayMatches(matches);
+  const anyLive = todayMatches.some(m => m.status === "IN_PLAY");
 
   if (!apiKey) {
     return (
@@ -225,7 +225,7 @@ export default function App() {
             <div style={s.eyebrow}>FIFA WORLD CUP 2026</div>
             <h1 style={s.headerTitle}>Sweepstakes</h1>
           </div>
-          <button style={s.refreshBtn} onClick={() => { fetchMatches(); if (activeTab === "odds") fetchOdds(); }} disabled={loading}>
+          <button style={s.refreshBtn} onClick={() => fetchMatches()} disabled={loading}>
             ↻ {loading ? "Updating..." : "Refresh"}
           </button>
         </div>
@@ -241,7 +241,7 @@ export default function App() {
         {[
           { id: "leaderboard", label: "🏆 Leaderboard" },
           { id: "myteams",     label: currentPlayer ? `⚽ ${currentPlayer.name}` : "👥 Teams" },
-          { id: "odds",        label: "📊 Odds" },
+          { id: "fixtures",    label: "📅 Fixtures" },
         ].map(tab => (
           <button key={tab.id}
             style={{ ...s.tab, ...(activeTab === tab.id ? s.tabActive : {}) }}
@@ -253,6 +253,54 @@ export default function App() {
 
       <main style={s.main}>
 
+        {/* TODAY'S MATCHES BANNER — shown on leaderboard tab only */}
+        {activeTab === "leaderboard" && todayMatches.length > 0 && (
+          <div style={s.todayBanner}>
+            <div style={s.todayHeader}>
+              {anyLive
+                ? <><span style={s.liveDot} />LIVE NOW</>
+                : "TODAY'S MATCHES"
+              }
+            </div>
+            {todayMatches.map(m => {
+              const isLive = m.status === "IN_PLAY";
+              const isFinished = m.status === "FINISHED";
+              const homeScore = m.score?.fullTime?.home;
+              const awayScore = m.score?.fullTime?.away;
+              const homeNorm = normalizeTeamName(m.homeTeam?.name || "");
+              const awayNorm = normalizeTeamName(m.awayTeam?.name || "");
+              const homeOwners = getOwners(homeNorm);
+              const awayOwners = getOwners(awayNorm);
+              return (
+                <div key={m.id} style={{ ...s.todayMatch, ...(isLive ? s.todayMatchLive : {}) }}>
+                  <div style={s.todayMatchTeams}>
+                    <div style={s.todayTeam}>
+                      <span style={s.todayTeamName}>{m.homeTeam?.shortName || m.homeTeam?.name}</span>
+                      {homeOwners.map(o => (
+                        <span key={o.slug} style={{ ...s.ownerPill, background: POT_COLORS[o.pot] + "33", color: POT_COLORS[o.pot] }}>{o.name}</span>
+                      ))}
+                    </div>
+                    <div style={s.todayScore}>
+                      {isLive || isFinished
+                        ? <span style={{ ...s.scoreText, ...(isLive ? { color: "#ef4444" } : {}) }}>{homeScore ?? 0} – {awayScore ?? 0}</span>
+                        : <span style={s.kickoff}>{toIrishTime(m.utcDate)}</span>
+                      }
+                    </div>
+                    <div style={{ ...s.todayTeam, alignItems: "flex-end" }}>
+                      <span style={s.todayTeamName}>{m.awayTeam?.shortName || m.awayTeam?.name}</span>
+                      {awayOwners.map(o => (
+                        <span key={o.slug} style={{ ...s.ownerPill, background: POT_COLORS[o.pot] + "33", color: POT_COLORS[o.pot] }}>{o.name}</span>
+                      ))}
+                    </div>
+                  </div>
+                  {isLive && <div style={s.liveTag}>LIVE</div>}
+                  {isFinished && <div style={s.finishedTag}>FT</div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         {/* LEADERBOARD */}
         {activeTab === "leaderboard" && (
           <div>
@@ -260,11 +308,17 @@ export default function App() {
             {leaderboard.map((p, i) => {
               const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : null;
               const isMe = currentPlayer?.slug === p.slug;
+              // Check if any of this person's teams are live
+              const liveTeam = Object.values(p.teams).find(t => getLiveMatch(t, matches));
+              const liveMatch = liveTeam ? getLiveMatch(liveTeam, matches) : null;
               return (
-                <div key={p.name} style={{ ...s.leaderRow, ...(i === 0 ? s.leaderRowFirst : {}), ...(isMe ? s.leaderRowMe : {}) }}>
+                <div key={p.name} style={{ ...s.leaderRow, ...(i === 0 ? s.leaderRowFirst : {}), ...(isMe ? s.leaderRowMe : {}), ...(liveMatch ? s.leaderRowLive : {}) }}>
                   <div style={s.leaderLeft}>
                     <div style={{ ...s.rank, ...(i === 0 ? s.rankFirst : {}) }}>{medal || i + 1}</div>
-                    <Avatar slug={p.slug} name={p.name} size={40} />
+                    <div style={{ position: "relative", flexShrink: 0 }}>
+                      <Avatar slug={p.slug} name={p.name} size={48} />
+                      {liveMatch && <span style={s.livePulse} />}
+                    </div>
                     <div>
                       <div style={s.participantName}>
                         {p.name} {isMe && <span style={s.youBadge}>you</span>}
@@ -307,14 +361,18 @@ export default function App() {
                 {Object.entries(currentPlayer.teams).map(([pot, team]) => {
                   const rec = getTeamRecord(team, matches);
                   const pts = calcPoints(team, matches, pot === "d");
+                  const live = getLiveMatch(team, matches);
                   return (
-                    <div key={pot} style={s.myTeamCard}>
+                    <div key={pot} style={{ ...s.myTeamCard, ...(live ? { borderColor: "#ef4444" } : {}) }}>
                       <div style={s.myTeamCardLeft}>
                         <span style={{ ...s.potTagLarge, background: POT_COLORS[pot] + "22", color: POT_COLORS[pot] }}>
                           {POT_LABELS[pot]}
                         </span>
                         <div>
-                          <div style={s.myTeamName}>{team}</div>
+                          <div style={s.myTeamName}>
+                            {team}
+                            {live && <span style={s.liveTag}>LIVE</span>}
+                          </div>
                           <div style={s.myTeamRecord}>{rec.w}W · {rec.d}D · {rec.l}L</div>
                         </div>
                       </div>
@@ -336,7 +394,7 @@ export default function App() {
                   {PARTICIPANTS.map(p => (
                     <div key={p.name} style={s.card}>
                       <div style={s.cardHeader}>
-                        <Avatar slug={p.slug} name={p.name} size={36} />
+                        <Avatar slug={p.slug} name={p.name} size={40} />
                         <div>
                           <div style={s.cardName}>{p.name}</div>
                           <div style={s.cardPts}>{calcAllPoints(p, matches)} pts</div>
@@ -364,40 +422,15 @@ export default function App() {
           </div>
         )}
 
-        {/* ODDS */}
-        {activeTab === "odds" && (
+        {/* FIXTURES */}
+        {activeTab === "fixtures" && (
           <div>
-            <div style={s.sectionLabel}>POT A — WORLD CUP WINNER ODDS</div>
-            {oddsLoading && <div style={s.hint}>Loading odds...</div>}
-            {oddsError && <div style={s.errorBanner}>⚠️ {oddsError}</div>}
-            {!oddsLoading && !oddsError && oddsData.length === 0 && (
-              <div style={s.hint}>No odds data available yet.</div>
-            )}
-            {!oddsLoading && oddsTable.map((row, i) => (
-              <div key={row.team} style={{ ...s.leaderRow, ...(i === 0 ? s.leaderRowFirst : {}) }}>
-                <div style={s.leaderLeft}>
-                  <div style={{ ...s.rank, ...(i === 0 ? s.rankFirst : {}) }}>{i + 1}</div>
-                  <Avatar slug={row.slug} name={row.owner} size={40} />
-                  <div>
-                    <div style={s.participantName}>{row.owner}</div>
-                    <div style={{ fontSize: 13, color: "#ef4444", fontWeight: 600 }}>{row.team}</div>
-                  </div>
-                </div>
-                <div style={s.pointsBadge}>
-                  {row.price ? (
-                    <>
-                      <span style={s.pointsNum}>{row.price}x</span>
-                      <span style={s.pointsLabel}>{row.prob}%</span>
-                    </>
-                  ) : (
-                    <span style={{ fontSize: 11, color: "#4a5568" }}>N/A</span>
-                  )}
-                </div>
-              </div>
-            ))}
-            <div style={{ fontSize: 11, color: "#4a5568", marginTop: 12 }}>
-              Decimal odds · implied probability · sorted by favourites
-            </div>
+            <div style={s.sectionLabel}>WORLD CUP FIXTURES</div>
+            <iframe
+              src="https://www.sportbusy.com/embed/world-cup"
+              style={{ width: "100%", height: "80vh", border: "none", borderRadius: 12, background: "#111827" }}
+              title="World Cup Fixtures"
+            />
           </div>
         )}
 
@@ -436,12 +469,30 @@ const s = {
   tabActive: { color: "#f0f4ff", borderBottomColor: "#6366f1" },
   main: { padding: "20px" },
   sectionLabel: { fontSize: 10, fontWeight: 700, letterSpacing: 2, color: "#6b7a99", marginBottom: 16 },
+  // Today's matches banner
+  todayBanner: { background: "#111827", border: "1px solid #1a2040", borderRadius: 12, padding: "14px", marginBottom: 20 },
+  todayHeader: { fontSize: 10, fontWeight: 700, letterSpacing: 2, color: "#6b7a99", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 },
+  liveDot: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#ef4444" },
+  todayMatch: { padding: "10px 0", borderBottom: "1px solid #1a2040" },
+  todayMatchLive: { },
+  todayMatchTeams: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  todayTeam: { display: "flex", flexDirection: "column", flex: 1 },
+  todayTeamName: { fontSize: 13, fontWeight: 700, marginBottom: 3 },
+  ownerPill: { fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 3, display: "inline-block", marginTop: 2, marginRight: 3 },
+  todayScore: { textAlign: "center", minWidth: 60 },
+  scoreText: { fontSize: 18, fontWeight: 800 },
+  kickoff: { fontSize: 13, color: "#6b7a99", fontWeight: 600 },
+  liveTag: { fontSize: 9, fontWeight: 800, background: "#ef4444", color: "#fff", padding: "2px 6px", borderRadius: 4, marginLeft: 8, verticalAlign: "middle", letterSpacing: 1 },
+  finishedTag: { fontSize: 9, fontWeight: 700, background: "#1a2040", color: "#6b7a99", padding: "2px 6px", borderRadius: 4, marginLeft: 8, verticalAlign: "middle" },
+  // Leaderboard
   leaderRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", marginBottom: 8, background: "#111827", borderRadius: 12, border: "1px solid #1a2040" },
   leaderRowFirst: { background: "linear-gradient(135deg,#1a1f3d,#16213e)", border: "1px solid #3b4fd6" },
   leaderRowMe: { border: "1px solid #6366f1" },
+  leaderRowLive: { border: "1px solid #ef444466" },
   leaderLeft: { display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 },
   rank: { width: 28, height: 28, borderRadius: 8, background: "#1a2040", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "#6b7a99", flexShrink: 0 },
   rankFirst: { background: "#6366f1", color: "#fff" },
+  livePulse: { position: "absolute", bottom: 0, right: 0, width: 12, height: 12, borderRadius: "50%", background: "#ef4444", border: "2px solid #0a0f1e" },
   participantName: { fontSize: 15, fontWeight: 700, marginBottom: 4 },
   youBadge: { fontSize: 10, fontWeight: 700, background: "#6366f1", color: "#fff", padding: "1px 6px", borderRadius: 4, marginLeft: 6, verticalAlign: "middle" },
   teamPills: { display: "flex", flexWrap: "wrap", gap: 4 },
@@ -449,6 +500,7 @@ const s = {
   pointsBadge: { display: "flex", flexDirection: "column", alignItems: "center", minWidth: 48, flexShrink: 0 },
   pointsNum: { fontSize: 22, fontWeight: 800, lineHeight: 1 },
   pointsLabel: { fontSize: 10, color: "#6b7a99", marginTop: 2 },
+  // My teams
   myTeamsHero: { display: "flex", alignItems: "center", gap: 20, padding: "20px", background: "linear-gradient(135deg,#1a1f3d,#16213e)", borderRadius: 16, border: "1px solid #3b4fd6", marginBottom: 24 },
   myTeamsName: { fontSize: 24, fontWeight: 800, marginBottom: 4 },
   myTeamsPoints: { fontSize: 16, color: "#6366f1", fontWeight: 700 },
@@ -461,6 +513,7 @@ const s = {
   myTeamPts: { display: "flex", flexDirection: "column", alignItems: "center" },
   myTeamPtsNum: { fontSize: 26, fontWeight: 800, lineHeight: 1 },
   myTeamPtsLabel: { fontSize: 10, color: "#6b7a99" },
+  // All teams
   noPlayerHint: { background: "#141929", border: "1px solid #2a3356", borderRadius: 8, padding: "12px 14px", fontSize: 13, color: "#8892aa", marginBottom: 16 },
   code: { background: "#1a2040", padding: "2px 6px", borderRadius: 4, fontSize: 12, color: "#6366f1" },
   cardsGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 },
