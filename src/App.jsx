@@ -264,7 +264,7 @@ export default function App() {
                 <div key={p.name} style={{ ...s.leaderRow, ...(i === 0 ? s.leaderRowFirst : {}), ...(isMe ? s.leaderRowMe : {}) }}>
                   <div style={s.leaderLeft}>
                     <div style={{ ...s.rank, ...(i === 0 ? s.rankFirst : {}) }}>{medal || i + 1}</div>
-                    <Avatar slug={p.slug} name={p.name} size={40} />
+                    <Avatar slug={p.slug} name={p.name} size={48} />
                     <div>
                       <div style={s.participantName}>
                         {p.name} {isMe && <span style={s.youBadge}>you</span>}
@@ -336,7 +336,7 @@ export default function App() {
                   {PARTICIPANTS.map(p => (
                     <div key={p.name} style={s.card}>
                       <div style={s.cardHeader}>
-                        <Avatar slug={p.slug} name={p.name} size={36} />
+                        <Avatar slug={p.slug} name={p.name} size={40} />
                         <div>
                           <div style={s.cardName}>{p.name}</div>
                           <div style={s.cardPts}>{calcAllPoints(p, matches)} pts</div>

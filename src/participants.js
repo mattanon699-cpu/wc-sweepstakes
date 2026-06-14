@@ -10,5 +10,5 @@ export const PARTICIPANTS = [
   { name: "Tom",         slug: "tom",         teams: { a: "England",      b: "Switzerland",  c: "Côte d'Ivoire",   d: "Saudi Arabia"   } },
   { name: "Ben",         slug: "ben",         teams: { a: "Spain",        b: "Japan",        c: "Egypt",           d: "Qatar"          } },
   { name: "John",        slug: "john",        teams: { a: "Morocco",      b: "USA",          c: "Canada",          d: "Curaçao"        } },
-  { name: "Placeholder", slug: "placeholder", teams: { a: "Germany",      b: "Mexico",       c: "Tunisia",         d: "Jordan"         } },
+  { name: "Cian", slug: "cian", teams: { a: "Germany",      b: "Mexico",       c: "Tunisia",         d: "Jordan"         } },
 ];
