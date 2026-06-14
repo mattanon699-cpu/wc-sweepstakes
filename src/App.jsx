@@ -241,7 +241,7 @@ export default function App() {
         {[
           { id: "leaderboard", label: "🏆 Leaderboard" },
           { id: "myteams",     label: currentPlayer ? `⚽ ${currentPlayer.name}` : "👥 Teams" },
-          { id: "odds",        label: "📅 Fixtures" },
+          { id: "odds",        label: "📊 Odds" },
         ].map(tab => (
           <button key={tab.id}
             style={{ ...s.tab, ...(activeTab === tab.id ? s.tabActive : {}) }}
@@ -264,7 +264,7 @@ export default function App() {
                 <div key={p.name} style={{ ...s.leaderRow, ...(i === 0 ? s.leaderRowFirst : {}), ...(isMe ? s.leaderRowMe : {}) }}>
                   <div style={s.leaderLeft}>
                     <div style={{ ...s.rank, ...(i === 0 ? s.rankFirst : {}) }}>{medal || i + 1}</div>
-                    <Avatar slug={p.slug} name={p.name} size={48} />
+                    <Avatar slug={p.slug} name={p.name} size={40} />
                     <div>
                       <div style={s.participantName}>
                         {p.name} {isMe && <span style={s.youBadge}>you</span>}
@@ -336,7 +336,7 @@ export default function App() {
                   {PARTICIPANTS.map(p => (
                     <div key={p.name} style={s.card}>
                       <div style={s.cardHeader}>
-                        <Avatar slug={p.slug} name={p.name} size={40} />
+                        <Avatar slug={p.slug} name={p.name} size={36} />
                         <div>
                           <div style={s.cardName}>{p.name}</div>
                           <div style={s.cardPts}>{calcAllPoints(p, matches)} pts</div>
@@ -367,21 +367,42 @@ export default function App() {
         {/* ODDS */}
         {activeTab === "odds" && (
           <div>
-            <div style={s.sectionLabel}>WORLD CUP WINNER ODDS</div>
-            <iframe
-              src="https://www.sportbusy.com/embed/world-cup"
-              style={{
-                width: "100%",
-                height: "80vh",
-                border: "none",
-                borderRadius: 12,
-                background: "#111827",
-              }}
-              title="World Cup Odds"
-            />
+            <div style={s.sectionLabel}>POT A — WORLD CUP WINNER ODDS</div>
+            {oddsLoading && <div style={s.hint}>Loading odds...</div>}
+            {oddsError && <div style={s.errorBanner}>⚠️ {oddsError}</div>}
+            {!oddsLoading && !oddsError && oddsData.length === 0 && (
+              <div style={s.hint}>No odds data available yet.</div>
+            )}
+            {!oddsLoading && oddsTable.map((row, i) => (
+              <div key={row.team} style={{ ...s.leaderRow, ...(i === 0 ? s.leaderRowFirst : {}) }}>
+                <div style={s.leaderLeft}>
+                  <div style={{ ...s.rank, ...(i === 0 ? s.rankFirst : {}) }}>{i + 1}</div>
+                  <Avatar slug={row.slug} name={row.owner} size={40} />
+                  <div>
+                    <div style={s.participantName}>{row.owner}</div>
+                    <div style={{ fontSize: 13, color: "#ef4444", fontWeight: 600 }}>{row.team}</div>
+                  </div>
+                </div>
+                <div style={s.pointsBadge}>
+                  {row.price ? (
+                    <>
+                      <span style={s.pointsNum}>{row.price}x</span>
+                      <span style={s.pointsLabel}>{row.prob}%</span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 11, color: "#4a5568" }}>N/A</span>
+                  )}
+                </div>
+              </div>
+            ))}
+            <div style={{ fontSize: 11, color: "#4a5568", marginTop: 12 }}>
+              Decimal odds · implied probability · sorted by favourites
+            </div>
           </div>
         )}
+
       </main>
+
       <footer style={s.footer}>
         <span>€120 pot · 12 players · WC 2026</span>
         <button style={s.resetBtn} onClick={() => { localStorage.removeItem("wc_api_key"); setApiKey(""); }}>
